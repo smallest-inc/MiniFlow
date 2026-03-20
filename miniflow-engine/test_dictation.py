@@ -498,128 +498,147 @@ class TestOpenAccessibilitySettings:
 # ── type_text() (83–100) ──────────────────────────────────────────────────────
 
 class TestTypeText:
-    def _mock_quartz(self):
-        mock = MagicMock()
-        mock.kCGEventSourceStateHIDSystemState = 0
-        mock.kCGHIDEventTap = 0
-        return mock
+    def _mocks(self):
+        mock_quartz = MagicMock()
+        mock_quartz.kCGEventSourceStateHIDSystemState = 0
+        mock_quartz.kCGHIDEventTap = 0
+        mock_appkit = MagicMock()
+        mock_pb = MagicMock()
+        mock_pb.stringForType_.return_value = "previous"
+        mock_appkit.NSPasteboard.generalPasteboard.return_value = mock_pb
+        mock_appkit.NSPasteboardTypeString = "public.utf8-plain-text"
+        return mock_quartz, mock_appkit, mock_pb
+
+    def _patch(self, mock_quartz, mock_appkit):
+        return patch.dict("sys.modules", {"Quartz": mock_quartz, "AppKit": mock_appkit})
 
     def test_83_empty_text_returns_immediately(self):
-        mock_quartz = self._mock_quartz()
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
+        mock_quartz, mock_appkit, mock_pb = self._mocks()
+        with self._patch(mock_quartz, mock_appkit):
             dictation.type_text("")
-        mock_quartz.CGEventSourceCreate.assert_not_called()
+        mock_pb.setString_forType_.assert_not_called()
 
     def test_84_calls_cgevent_source_create(self):
-        mock_quartz = self._mock_quartz()
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
-            dictation.type_text("hello")
+        mock_quartz, mock_appkit, _ = self._mocks()
+        with self._patch(mock_quartz, mock_appkit):
+            with patch("time.sleep"):
+                dictation.type_text("hello")
         mock_quartz.CGEventSourceCreate.assert_called_once()
 
     def test_85_calls_cgevent_create_keyboard_event_twice(self):
-        mock_quartz = self._mock_quartz()
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
-            dictation.type_text("hello")
+        mock_quartz, mock_appkit, _ = self._mocks()
+        with self._patch(mock_quartz, mock_appkit):
+            with patch("time.sleep"):
+                dictation.type_text("hello")
         assert mock_quartz.CGEventCreateKeyboardEvent.call_count == 2
 
-    def test_86_calls_cgevent_keyboard_set_unicode_string_twice(self):
-        mock_quartz = self._mock_quartz()
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
-            dictation.type_text("hi")
-        assert mock_quartz.CGEventKeyboardSetUnicodeString.call_count == 2
+    def test_86_sets_text_on_pasteboard(self):
+        mock_quartz, mock_appkit, mock_pb = self._mocks()
+        with self._patch(mock_quartz, mock_appkit):
+            with patch("time.sleep"):
+                dictation.type_text("hi")
+        mock_pb.setString_forType_.assert_called()
+        assert mock_pb.setString_forType_.call_args_list[0][0][0] == "hi"
 
     def test_87_calls_cgevent_post_twice(self):
-        mock_quartz = self._mock_quartz()
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
-            dictation.type_text("hi")
+        mock_quartz, mock_appkit, _ = self._mocks()
+        with self._patch(mock_quartz, mock_appkit):
+            with patch("time.sleep"):
+                dictation.type_text("hi")
         assert mock_quartz.CGEventPost.call_count == 2
 
-    def test_88_unicode_string_set_with_correct_length(self):
-        mock_quartz = self._mock_quartz()
-        text = "hello"
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
-            dictation.type_text(text)
-        calls = mock_quartz.CGEventKeyboardSetUnicodeString.call_args_list
-        for c in calls:
-            assert c[0][1] == len(text)
+    def test_88_clears_pasteboard_before_setting(self):
+        mock_quartz, mock_appkit, mock_pb = self._mocks()
+        with self._patch(mock_quartz, mock_appkit):
+            with patch("time.sleep"):
+                dictation.type_text("hello")
+        mock_pb.clearContents.assert_called()
 
-    def test_89_unicode_string_set_with_correct_text(self):
-        mock_quartz = self._mock_quartz()
-        text = "hello world"
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
-            dictation.type_text(text)
-        calls = mock_quartz.CGEventKeyboardSetUnicodeString.call_args_list
-        for c in calls:
-            assert c[0][2] == text
+    def test_89_restores_previous_clipboard(self):
+        mock_quartz, mock_appkit, mock_pb = self._mocks()
+        mock_pb.stringForType_.return_value = "old content"
+        with self._patch(mock_quartz, mock_appkit):
+            with patch("time.sleep"):
+                dictation.type_text("hello")
+        calls = mock_pb.setString_forType_.call_args_list
+        assert any(c[0][0] == "old content" for c in calls)
 
     def test_90_quartz_exception_caught_silently(self):
-        mock_quartz = self._mock_quartz()
+        mock_quartz, mock_appkit, _ = self._mocks()
         mock_quartz.CGEventSourceCreate.side_effect = Exception("Quartz error")
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
+        with self._patch(mock_quartz, mock_appkit):
             dictation.type_text("hello")  # should not raise
 
-    def test_91_none_text_returns_early(self):
-        mock_quartz = self._mock_quartz()
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
+    def test_91_empty_text_skips_cgevent_post(self):
+        mock_quartz, mock_appkit, _ = self._mocks()
+        with self._patch(mock_quartz, mock_appkit):
             dictation.type_text("")
         mock_quartz.CGEventPost.assert_not_called()
 
     def test_92_single_char_text(self):
-        mock_quartz = self._mock_quartz()
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
-            dictation.type_text("a")
+        mock_quartz, mock_appkit, _ = self._mocks()
+        with self._patch(mock_quartz, mock_appkit):
+            with patch("time.sleep"):
+                dictation.type_text("a")
         assert mock_quartz.CGEventPost.call_count == 2
 
-    def test_93_long_text_processed(self):
-        mock_quartz = self._mock_quartz()
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
-            dictation.type_text("a" * 500)
+    def test_93_long_text_single_paste(self):
+        mock_quartz, mock_appkit, _ = self._mocks()
+        with self._patch(mock_quartz, mock_appkit):
+            with patch("time.sleep"):
+                dictation.type_text("a" * 500)
         assert mock_quartz.CGEventPost.call_count == 2
 
     def test_94_unicode_text_processed(self):
-        mock_quartz = self._mock_quartz()
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
-            dictation.type_text("héllo wörld")
+        mock_quartz, mock_appkit, _ = self._mocks()
+        with self._patch(mock_quartz, mock_appkit):
+            with patch("time.sleep"):
+                dictation.type_text("héllo wörld")
         assert mock_quartz.CGEventPost.call_count == 2
 
     def test_95_emoji_text_processed(self):
-        mock_quartz = self._mock_quartz()
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
-            dictation.type_text("hello 😊")
+        mock_quartz, mock_appkit, _ = self._mocks()
+        with self._patch(mock_quartz, mock_appkit):
+            with patch("time.sleep"):
+                dictation.type_text("hello 😊")
         assert mock_quartz.CGEventPost.call_count == 2
 
-    def test_96_newline_text_processed(self):
-        mock_quartz = self._mock_quartz()
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
-            dictation.type_text("line1\nline2")
-        # 2 calls for "line1" (down+up) + 2 for Shift+Return (down+up) + 2 for "line2" (down+up)
-        assert mock_quartz.CGEventPost.call_count == 6
+    def test_96_newline_pasted_as_single_operation(self):
+        mock_quartz, mock_appkit, mock_pb = self._mocks()
+        with self._patch(mock_quartz, mock_appkit):
+            with patch("time.sleep"):
+                dictation.type_text("line1\nline2")
+        assert mock_quartz.CGEventPost.call_count == 2
 
     def test_97_does_not_modify_active_state(self):
-        mock_quartz = self._mock_quartz()
+        mock_quartz, mock_appkit, _ = self._mocks()
         dictation._active = False
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
-            dictation.type_text("hello")
+        with self._patch(mock_quartz, mock_appkit):
+            with patch("time.sleep"):
+                dictation.type_text("hello")
         assert dictation._active is False
 
     def test_98_returns_none(self):
-        mock_quartz = self._mock_quartz()
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
-            result = dictation.type_text("hello")
+        mock_quartz, mock_appkit, _ = self._mocks()
+        with self._patch(mock_quartz, mock_appkit):
+            with patch("time.sleep"):
+                result = dictation.type_text("hello")
         assert result is None
 
-    def test_99_keyboard_event_created_with_key_code_zero(self):
-        mock_quartz = self._mock_quartz()
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
-            dictation.type_text("hi")
+    def test_99_cmd_v_key_code_used(self):
+        mock_quartz, mock_appkit, _ = self._mocks()
+        with self._patch(mock_quartz, mock_appkit):
+            with patch("time.sleep"):
+                dictation.type_text("hi")
         calls = mock_quartz.CGEventCreateKeyboardEvent.call_args_list
-        assert calls[0][0][1] == 0  # key code
-        assert calls[1][0][1] == 0
+        assert calls[0][0][1] == 0x09  # V key
+        assert calls[1][0][1] == 0x09
 
     def test_100_key_down_then_key_up(self):
-        mock_quartz = self._mock_quartz()
-        with patch.dict("sys.modules", {"Quartz": mock_quartz}):
-            dictation.type_text("hi")
+        mock_quartz, mock_appkit, _ = self._mocks()
+        with self._patch(mock_quartz, mock_appkit):
+            with patch("time.sleep"):
+                dictation.type_text("hi")
         calls = mock_quartz.CGEventCreateKeyboardEvent.call_args_list
         assert calls[0][0][2] is True   # key down
         assert calls[1][0][2] is False  # key up
