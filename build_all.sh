@@ -145,9 +145,15 @@ if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "
     --password "$APPLE_APP_SPECIFIC_PASSWORD" \
     --team-id "$APPLE_TEAM_ID" \
     --wait
-  echo "→ Stapling notarization ticket..."
-  xcrun stapler staple "$DMG_PATH"
-  echo "✓ Notarized and stapled"
+  echo "→ Stapling notarization ticket (retrying up to 5x for CDN propagation)..."
+  for attempt in 1 2 3 4 5; do
+    if xcrun stapler staple "$DMG_PATH"; then
+      echo "✓ Notarized and stapled"
+      break
+    fi
+    echo "  stapler attempt $attempt failed, waiting 30s..."
+    sleep 30
+  done
 fi
 
 echo ""
