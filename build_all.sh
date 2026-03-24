@@ -74,7 +74,7 @@ xcodebuild \
   -scheme "$SCHEME" \
   -configuration "$CONFIG" \
   CODE_SIGN_IDENTITY="$SIGN_IDENTITY" \
-  CODE_SIGN_STYLE=Manual \
+  CODE_SIGN_STYLE=Manual \i
   DEVELOPMENT_TEAM="$DEV_TEAM" \
   CONFIGURATION_BUILD_DIR="$BUILD_DIR" \
   clean build
@@ -107,19 +107,21 @@ cp -R "$ENGINE_DIST" "$APP_PATH/Contents/Resources/miniflow-engine"
 chmod +x "$APP_PATH/Contents/Resources/miniflow-engine/miniflow-engine"
 echo "✓ Engine bundle copied to $APP_PATH/Contents/Resources/miniflow-engine/"
 
-# Sign the main executable
+# Re-sign the entire .app bundle after adding the engine to Resources.
+# (Copying files into Resources invalidates the xcodebuild signature,
+# so we must re-sign the whole bundle — not just the binary.)
 ENTITLEMENTS="$SCRIPT_DIR/MiniflowApp/MiniflowApp/MiniflowApp.entitlements"
 if [ -n "${APPLE_TEAM_ID:-}" ]; then
-  echo "→ Signing with Developer ID (hardened runtime)..."
-  codesign --force --sign "Developer ID Application" \
+  echo "→ Signing .app bundle with Developer ID (hardened runtime)..."
+  codesign --force --deep --sign "Developer ID Application" \
     --options runtime \
     --entitlements "$ENTITLEMENTS" \
-    "$APP_PATH/Contents/MacOS/MiniflowApp"
-  echo "✓ App signed with Developer ID"
+    "$APP_PATH"
+  echo "✓ App bundle signed with Developer ID"
 else
-  echo "→ Re-signing main executable (ad-hoc)..."
-  codesign --force --sign - "$APP_PATH/Contents/MacOS/MiniflowApp"
-  echo "✓ App re-signed (ad-hoc)"
+  echo "→ Re-signing .app bundle (ad-hoc)..."
+  codesign --force --deep --sign - "$APP_PATH"
+  echo "✓ App bundle re-signed (ad-hoc)"
 fi
 
 # Strip quarantine so users can open without Gatekeeper warning
