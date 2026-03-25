@@ -38,6 +38,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s %(name)s] %(message)s",
     datefmt="%H:%M:%S",
+    force=True,
     handlers=[
         logging.StreamHandler(),
         logging.FileHandler(str(_log_path), encoding="utf-8"),
@@ -159,11 +160,117 @@ async def oauth_callback(data: str = "", state: str = ""):
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await manager.connect(ws)
+    # Active streaming sessions: maps session_id -> asyncio.Queue
+    sessions: dict[str, asyncio.Queue] = {}
     try:
         while True:
-            await ws.receive_text()  # keep connection alive
+            raw = await ws.receive_text()
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
+
+            t = msg.get("type")
+
+            if t == "start_transcription":
+                session_id = msg.get("id", "default")
+                bundle_id = msg.get("bundleID")
+                if bundle_id:
+                    agent.set_target_app(bundle_id)
+                q: asyncio.Queue = asyncio.Queue()
+                sessions[session_id] = q
+                asyncio.create_task(_stream_session(ws, session_id, q))
+
+            elif t == "audio_chunk":
+                session_id = msg.get("id", "default")
+                if session_id in sessions:
+                    import base64 as _b64
+                    pcm = _b64.b64decode(msg["data"])
+                    await sessions[session_id].put(pcm)
+
+            elif t == "stop_transcription":
+                session_id = msg.get("id", "default")
+                if session_id in sessions:
+                    await sessions[session_id].put(None)  # sentinel
+                    sessions.pop(session_id, None)
+
+            # legacy single-shot transcribe (kept for compatibility)
+            elif t == "transcribe":
+                asyncio.create_task(_handle_ws_transcribe(ws, msg))
+
     except WebSocketDisconnect:
+        # Cancel any in-progress sessions
+        for q in sessions.values():
+            await q.put(None)
         manager.disconnect(ws)
+
+
+async def _stream_session(ws: WebSocket, session_id: str, chunk_queue: asyncio.Queue):
+    """Run a full streaming transcription session and send back the formatted result."""
+    import time
+    t0 = time.monotonic()
+
+    async def on_partial(text: str):
+        await ws.send_text(json.dumps({
+            "event": "partial_transcript",
+            "id": session_id,
+            "payload": {"text": text},
+        }))
+
+    try:
+        transcript = await audio.stream_transcribe(chunk_queue, on_partial=on_partial)
+    except Exception as e:
+        log.error(f"Streaming STT failed: {e}")
+        transcript = ""
+
+    stt_ms = int((time.monotonic() - t0) * 1000)
+    t1 = time.monotonic()
+    transcript = format_transcript(transcript)
+    fmt_ms = int((time.monotonic() - t1) * 1000)
+    log.info(f"Streaming STT: {stt_ms}ms  |  GPT formatter: {fmt_ms}ms")
+    transcript = dictionary.apply(transcript)
+    transcript = shortcuts.apply(transcript)
+    if transcript.strip():
+        history.append_entry(
+            transcript=transcript, entry_type="dictation",
+            actions=[{"action": "dictation", "success": True, "message": transcript}],
+            success=True,
+        )
+    await ws.send_text(json.dumps({
+        "event": "transcript",
+        "id": session_id,
+        "payload": {"transcript": transcript},
+    }))
+
+
+async def _handle_ws_transcribe(ws: WebSocket, msg: dict):
+    """Legacy single-shot transcribe over WebSocket."""
+    import base64 as _b64, time
+    req_id = msg.get("id", "")
+    bundle_id = msg.get("bundleID")
+    if bundle_id:
+        agent.set_target_app(bundle_id)
+    wav_bytes = _b64.b64decode(msg["audio"])
+    t0 = time.monotonic()
+    transcript = await audio.transcribe(wav_bytes)
+    stt_ms = int((time.monotonic() - t0) * 1000)
+    t1 = time.monotonic()
+    transcript = format_transcript(transcript)
+    fmt_ms = int((time.monotonic() - t1) * 1000)
+    log.info(f"STT: {stt_ms}ms  |  GPT formatter: {fmt_ms}ms")
+    transcript = dictionary.apply(transcript)
+    transcript = shortcuts.apply(transcript)
+    if transcript.strip():
+        history.append_entry(
+            transcript=transcript, entry_type="dictation",
+            actions=[{"action": "dictation", "success": True, "message": transcript}],
+            success=True,
+        )
+    await ws.send_text(json.dumps({
+        "event": "transcript",
+        "id": req_id,
+        "payload": {"transcript": transcript},
+    }))
 
 # ── Invoke dispatcher ──
 
@@ -241,15 +348,24 @@ def format_transcript(raw_text: str) -> str:
 
 
 async def _transcribe_audio(b: dict):
-    import base64
+    import base64, time
     bundle_id = b.get("bundleID")
     if bundle_id:
         agent.set_target_app(bundle_id)
     wav_bytes = base64.b64decode(b["audio"])
+    t0 = time.monotonic()
     transcript = await audio.transcribe(wav_bytes)
+    stt_ms = int((time.monotonic() - t0) * 1000)
+    t1 = time.monotonic()
     transcript = format_transcript(transcript)
+    fmt_ms = int((time.monotonic() - t1) * 1000)
+    log.info(f"STT: {stt_ms}ms  |  GPT formatter: {fmt_ms}ms")
     transcript = dictionary.apply(transcript)
     transcript = shortcuts.apply(transcript)
+    if transcript.strip():
+        history.append_entry(transcript=transcript, entry_type="dictation",
+                             actions=[{"action": "dictation", "success": True, "message": transcript}],
+                             success=True)
     return {"transcript": transcript}
 
 

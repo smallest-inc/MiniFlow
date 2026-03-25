@@ -138,10 +138,6 @@ fi
 xattr -cr "$APP_PATH" 2>/dev/null || true
 echo "✓ Quarantine attribute removed"
 
-# Strip quarantine so users can open without Gatekeeper warning
-xattr -cr "$APP_PATH" 2>/dev/null || true
-echo "✓ Quarantine attribute removed"
-
 # ── Step 4: Create DMG ────────────────────────────────────────────────────────
 
 echo ""
