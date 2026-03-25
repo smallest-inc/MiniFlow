@@ -155,24 +155,40 @@ DMG_PATH="$SCRIPT_DIR/build/${APP_NAME}-${VERSION}.dmg"
 if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
   echo ""
   echo "━━━ Notarizing DMG ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "→ Submitting to Apple notary service (this may take a few minutes)..."
-  NOTARY_OUTPUT=$(xcrun notarytool submit "$DMG_PATH" \
+  # Submit without --wait (which hangs), then poll manually with a timeout
+  echo "→ Submitting to Apple notary service..."
+  SUBMIT_OUTPUT=$(xcrun notarytool submit "$DMG_PATH" \
     --apple-id "$APPLE_ID" \
     --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-    --team-id "$APPLE_TEAM_ID" \
-    --wait 2>&1)
-  echo "$NOTARY_OUTPUT"
-  NOTARY_ID=$(echo "$NOTARY_OUTPUT" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
-  NOTARY_STATUS=$(echo "$NOTARY_OUTPUT" | grep -i "status:" | tail -1 | sed 's/.*status:[[:space:]]*//' | awk '{print $1}')
+    --team-id "$APPLE_TEAM_ID" 2>&1) || true
+  echo "$SUBMIT_OUTPUT"
+  NOTARY_ID=$(echo "$SUBMIT_OUTPUT" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
+  if [ -z "$NOTARY_ID" ]; then
+    echo "✗ Failed to submit — no submission ID received"
+    exit 1
+  fi
+  echo "→ Submission ID: $NOTARY_ID — polling for result (timeout: 15 min)..."
+  DEADLINE=$((SECONDS + 900))
+  NOTARY_STATUS=""
+  while [ $SECONDS -lt $DEADLINE ]; do
+    WAIT_OUTPUT=$(xcrun notarytool info "$NOTARY_ID" \
+      --apple-id "$APPLE_ID" \
+      --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+      --team-id "$APPLE_TEAM_ID" 2>&1) || true
+    NOTARY_STATUS=$(echo "$WAIT_OUTPUT" | grep -i "status:" | head -1 | sed 's/.*status:[[:space:]]*//' | awk '{print $1}')
+    echo "  status: $NOTARY_STATUS"
+    if [ "$NOTARY_STATUS" = "Accepted" ] || [ "$NOTARY_STATUS" = "Invalid" ] || [ "$NOTARY_STATUS" = "Rejected" ]; then
+      break
+    fi
+    sleep 30
+  done
   echo "→ Notarization result: id=$NOTARY_ID status=$NOTARY_STATUS"
   if [ "$NOTARY_STATUS" != "Accepted" ]; then
     echo "✗ Notarization failed (status: $NOTARY_STATUS) — fetching rejection log..."
-    if [ -n "$NOTARY_ID" ]; then
-      xcrun notarytool log "$NOTARY_ID" \
-        --apple-id "$APPLE_ID" \
-        --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-        --team-id "$APPLE_TEAM_ID"
-    fi
+    xcrun notarytool log "$NOTARY_ID" \
+      --apple-id "$APPLE_ID" \
+      --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+      --team-id "$APPLE_TEAM_ID" || true
     exit 1
   fi
   echo "→ Stapling notarization ticket (retrying up to 10x, 60s apart)..."
