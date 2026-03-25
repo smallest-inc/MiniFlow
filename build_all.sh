@@ -162,8 +162,9 @@ if [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ] && [ -n "
     --team-id "$APPLE_TEAM_ID" \
     --wait 2>&1)
   echo "$NOTARY_OUTPUT"
-  NOTARY_ID=$(echo "$NOTARY_OUTPUT" | grep "^  id:" | head -1 | awk '{print $2}')
-  NOTARY_STATUS=$(echo "$NOTARY_OUTPUT" | grep "^  status:" | awk '{print $2}')
+  NOTARY_ID=$(echo "$NOTARY_OUTPUT" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
+  NOTARY_STATUS=$(echo "$NOTARY_OUTPUT" | grep -i "status:" | tail -1 | sed 's/.*status:[[:space:]]*//' | awk '{print $1}')
+  echo "→ Notarization result: id=$NOTARY_ID status=$NOTARY_STATUS"
   if [ "$NOTARY_STATUS" != "Accepted" ]; then
     echo "✗ Notarization failed (status: $NOTARY_STATUS) — fetching rejection log..."
     if [ -n "$NOTARY_ID" ]; then
