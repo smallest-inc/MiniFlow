@@ -115,23 +115,31 @@ echo "✓ Engine bundle copied to $APP_PATH/Contents/Resources/miniflow-engine/"
 ENTITLEMENTS="$SCRIPT_DIR/MiniflowApp/MiniflowApp/MiniflowApp.entitlements"
 ENGINE_BUNDLE="$APP_PATH/Contents/Resources/miniflow-engine"
 if [ -n "${APPLE_TEAM_ID:-}" ]; then
-  echo "→ Signing Mach-O binaries in PyInstaller bundle..."
-  # Sign all Mach-O binaries: .so, .dylib, executables (no extension)
+  echo "→ Signing all code in PyInstaller bundle (inside-out)..."
+  # 1. Sign all bare Mach-O files (.so, .dylib) — leaves out framework binaries
   find "$ENGINE_BUNDLE" -type f \( -name "*.so" -o -name "*.dylib" \) \
     -exec codesign --force --sign "Developer ID Application" --options runtime --timestamp {} \;
-  find "$ENGINE_BUNDLE" -type f -perm +0111 ! -name "*.py" ! -name "*.txt" ! -name "*.cfg" \
+  # 2. Sign standalone executables (skip anything inside a .framework)
+  find "$ENGINE_BUNDLE" -type f -perm +0111 \
+    ! -name "*.py" ! -name "*.txt" ! -name "*.cfg" \
+    ! -path "*.framework/*" \
     -exec codesign --force --sign "Developer ID Application" --options runtime --timestamp {} \; 2>/dev/null || true
-  # Sign Python.framework as a bundle — notarization rejects bare-binary signatures on frameworks
-  find "$ENGINE_BUNDLE" -path "*/Python.framework" -type d | while read fw; do
+  # 3. Sign .framework bundles (handles inner binaries + CodeResources properly)
+  find "$ENGINE_BUNDLE" -name "*.framework" -type d | while read fw; do
     codesign --force --sign "Developer ID Application" --options runtime --timestamp "$fw"
   done
+  # 4. Sign the .app bundle last — preserves all nested signatures
   echo "→ Signing .app bundle with Developer ID (hardened runtime)..."
   codesign --force --sign "Developer ID Application" \
     --options runtime \
     --timestamp \
     --entitlements "$ENTITLEMENTS" \
+    --deep \
     "$APP_PATH"
-  echo "✓ App bundle signed with Developer ID"
+  # Verify the signature is valid before proceeding
+  echo "→ Verifying signature..."
+  codesign --verify --deep --strict "$APP_PATH" 2>&1
+  echo "✓ App bundle signed and verified"
 else
   echo "→ Re-signing .app bundle (ad-hoc)..."
   codesign --force --sign - "$APP_PATH"
