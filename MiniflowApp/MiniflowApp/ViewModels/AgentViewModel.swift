@@ -50,13 +50,6 @@ final class AgentViewModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        events.$partialTranscript
-            .receive(on: RunLoop.main)
-            .sink { [weak self] partial in
-                if !partial.isEmpty { self?.transcript = partial }
-            }
-            .store(in: &cancellables)
-
         events.$lastActionResult
             .compactMap { $0 }
             .receive(on: RunLoop.main)
@@ -142,11 +135,6 @@ final class AgentViewModel: ObservableObject {
         }
 
         do {
-            // Start streaming session before capture so no chunks are missed
-            events.startTranscription(bundleID: targetBundleID)
-            audio.onChunk = { [weak self] pcm in
-                self?.events.sendAudioChunk(pcm)
-            }
             try audio.startCapture()
         } catch {
             isListening = false
@@ -158,21 +146,21 @@ final class AgentViewModel: ObservableObject {
         guard isListening else { return }
         isListening = false
         keyReleaseTime = Date()
-        audio.onChunk = nil
+
+        let wavData = audio.stopCaptureAndGetWav()
+        guard !wavData.isEmpty else { return }
 
         if let start = listeningStartTime, let release = keyReleaseTime {
             lastAudioLengthSecs = release.timeIntervalSince(start)
         }
 
-        audio.stopCapture()
-
         do {
-            // STT was happening in real-time — stopTranscription just signals end
-            // and waits for the final formatted result (GPT formatter time only)
+            var body: [String: Any] = ["audio": wavData.base64EncodedString()]
+            if let bundleID = targetBundleID { body["bundleID"] = bundleID }
             let sttStart = Date()
-            let fullText = try await events.stopTranscription()
-                .trimmingCharacters(in: .whitespaces)
+            let result: [String: String] = try await api.invoke("transcribe_audio", body: body)
             lastSttMs = Int(Date().timeIntervalSince(sttStart) * 1000)
+            let fullText = (result["transcript"] ?? "").trimmingCharacters(in: .whitespaces)
             transcript = fullText
             if !fullText.isEmpty {
                 // Accumulate word count (never resets on Clear All)
@@ -187,12 +175,7 @@ final class AgentViewModel: ObservableObject {
                     let prev = UserDefaults.standard.double(forKey: "mf_total_speaking_seconds")
                     UserDefaults.standard.set(prev + duration, forKey: "mf_total_speaking_seconds")
                 }
-                // Skip the execute_command round-trip — history is saved
-                // in transcribe_audio and the text is always plain dictation.
-                let ar = ActionResult(action: "dictation", success: true, message: fullText)
-                actions = [ar] + actions
-                lastResultAction = ar
-                await handleLocalDictationIfNeeded([ar])
+                await executeCommand(fullText)
             }
             listeningStartTime = nil
         } catch {
@@ -290,6 +273,15 @@ final class AgentViewModel: ObservableObject {
                 return
             }
 
+            if let bundleID {
+                activateTargetApp(bundleID)
+                // Wait for the app to come to front — poll until it's frontmost or timeout
+                for _ in 0..<20 {
+                    try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
+                    if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID { break }
+                }
+            }
+
             await typeTextLocally(text)
             let totalMs = keyReleaseTime.map { Int(Date().timeIntervalSince($0) * 1000) } ?? 0
             axLog("""
@@ -299,7 +291,7 @@ final class AgentViewModel: ObservableObject {
             │  Fn release → screen : \(totalMs)ms
             └────────────────────────────────────────────
             """)
-            axLog("handleLocalDictation: typed via Cmd+V fallback")
+            axLog("handleLocalDictation: typed via CGEvent")
             return
         }
 
@@ -325,14 +317,13 @@ final class AgentViewModel: ObservableObject {
     private func typeTextLocally(_ text: String) async {
         guard !text.isEmpty else { return }
 
-        // Try AXUIElement first — works for native apps, handles newlines natively
+        // Try AXUIElement first — inserts text directly at cursor, handles newlines natively
         if insertTextViaAX(text) {
             axLog("typeTextLocally: inserted via AXUIElement (\(text.count) chars)")
             return
         }
 
-        // AX failed (e.g. Electron apps) — paste via Cmd+V immediately, no activation wait
-        // The target app still has focus since MiniFlow's pill is non-activating
+        // Fallback: clipboard paste via Cmd+V
         axLog("typeTextLocally: AX failed, falling back to Cmd+V")
         let pasteboard = NSPasteboard.general
         let previous = pasteboard.string(forType: .string)

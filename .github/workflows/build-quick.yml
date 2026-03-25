@@ -1,6 +1,8 @@
 name: Build MiniFlow DMG (no notarization)
 
 on:
+  push:
+    branches: [ai-websocket]
   workflow_dispatch:
 
 jobs:
