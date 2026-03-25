@@ -155,12 +155,10 @@ final class AgentViewModel: ObservableObject {
         }
 
         do {
-            var body: [String: Any] = ["audio": wavData.base64EncodedString()]
-            if let bundleID = targetBundleID { body["bundleID"] = bundleID }
             let sttStart = Date()
-            let result: [String: String] = try await api.invoke("transcribe_audio", body: body)
+            let fullText = try await events.transcribe(wavData: wavData, bundleID: targetBundleID)
+                .trimmingCharacters(in: .whitespaces)
             lastSttMs = Int(Date().timeIntervalSince(sttStart) * 1000)
-            let fullText = (result["transcript"] ?? "").trimmingCharacters(in: .whitespaces)
             transcript = fullText
             if !fullText.isEmpty {
                 // Accumulate word count (never resets on Clear All)

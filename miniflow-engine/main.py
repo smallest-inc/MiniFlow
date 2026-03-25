@@ -161,9 +161,45 @@ async def websocket_endpoint(ws: WebSocket):
     await manager.connect(ws)
     try:
         while True:
-            await ws.receive_text()  # keep connection alive
+            raw = await ws.receive_text()
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
+            if msg.get("type") == "transcribe":
+                asyncio.create_task(_handle_ws_transcribe(ws, msg))
+            # all other messages keep the connection alive
     except WebSocketDisconnect:
         manager.disconnect(ws)
+
+
+async def _handle_ws_transcribe(ws: WebSocket, msg: dict):
+    import base64 as _b64, time
+    req_id = msg.get("id", "")
+    bundle_id = msg.get("bundleID")
+    if bundle_id:
+        agent.set_target_app(bundle_id)
+    wav_bytes = _b64.b64decode(msg["audio"])
+    t0 = time.monotonic()
+    transcript = await audio.transcribe(wav_bytes)
+    stt_ms = int((time.monotonic() - t0) * 1000)
+    t1 = time.monotonic()
+    transcript = format_transcript(transcript)
+    fmt_ms = int((time.monotonic() - t1) * 1000)
+    log.info(f"STT: {stt_ms}ms  |  GPT formatter: {fmt_ms}ms")
+    transcript = dictionary.apply(transcript)
+    transcript = shortcuts.apply(transcript)
+    if transcript.strip():
+        history.append_entry(
+            transcript=transcript, entry_type="dictation",
+            actions=[{"action": "dictation", "success": True, "message": transcript}],
+            success=True,
+        )
+    await ws.send_text(json.dumps({
+        "event": "transcript",
+        "id": req_id,
+        "payload": {"transcript": transcript},
+    }))
 
 # ── Invoke dispatcher ──
 

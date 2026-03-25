@@ -19,6 +19,9 @@ final class EventStream: ObservableObject {
     private var task: URLSessionWebSocketTask?
     private var reconnectWorkItem: DispatchWorkItem?
 
+    // Pending transcription continuations keyed by request ID
+    private var transcriptContinuations: [String: CheckedContinuation<String, Error>] = [:]
+
     private init() {}
 
     // MARK: - Connection
@@ -62,15 +65,50 @@ final class EventStream: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: item)
     }
 
+    // MARK: - Send audio for transcription
+
+    func transcribe(wavData: Data, bundleID: String?) async throws -> String {
+        let reqID = UUID().uuidString
+        let payload: [String: Any] = [
+            "type": "transcribe",
+            "id": reqID,
+            "audio": wavData.base64EncodedString(),
+            "bundleID": bundleID as Any,
+        ]
+        let json = try JSONSerialization.data(withJSONObject: payload)
+        let text = String(data: json, encoding: .utf8)!
+
+        return try await withCheckedThrowingContinuation { continuation in
+            transcriptContinuations[reqID] = continuation
+            task?.send(.string(text)) { [weak self] error in
+                if let error {
+                    self?.transcriptContinuations.removeValue(forKey: reqID)
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     // MARK: - Event dispatch
 
     private func dispatch(_ text: String) {
         guard
             let data = text.data(using: .utf8),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let event = json["event"] as? String,
-            let payload = json["payload"]
+            let event = json["event"] as? String
         else { return }
+
+        // Handle transcription response — resume the waiting continuation
+        if event == "transcript",
+           let reqID = json["id"] as? String,
+           let payload = json["payload"] as? [String: Any],
+           let transcript = payload["transcript"] as? String {
+            let continuation = transcriptContinuations.removeValue(forKey: reqID)
+            continuation?.resume(returning: transcript)
+            return
+        }
+
+        guard let payload = json["payload"] else { return }
 
         DispatchQueue.main.async {
             switch event {
