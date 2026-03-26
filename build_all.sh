@@ -140,6 +140,14 @@ if [ -n "${APPLE_TEAM_ID:-}" ]; then
   # Verify every nested signature is valid before submitting to Apple
   echo "→ Verifying all signatures..."
   codesign --verify --deep --strict --verbose=2 "$APP_PATH" 2>&1
+  echo "→ Checking entitlements for get-task-allow..."
+  if codesign -d --entitlements - "$APP_PATH" 2>&1 | grep -q "get-task-allow"; then
+    echo "✗ FATAL: get-task-allow found in entitlements — Apple will reject this"
+    codesign -d --entitlements - "$APP_PATH" 2>&1
+    exit 1
+  fi
+  echo "→ Checking secure timestamp..."
+  codesign -dvv "$APP_PATH" 2>&1 | grep -E "Timestamp|Authority|Flag"
   echo "✓ App bundle signed and verified"
 else
   echo "→ Re-signing .app bundle (ad-hoc)..."
@@ -147,8 +155,9 @@ else
   echo "✓ App bundle re-signed (ad-hoc)"
 fi
 
-# Strip quarantine so users can open without Gatekeeper warning
-xattr -cr "$APP_PATH" 2>/dev/null || true
+# Strip only quarantine xattr — xattr -cr would strip ALL xattrs
+# which could affect code signature metadata
+xattr -dr com.apple.quarantine "$APP_PATH" 2>/dev/null || true
 echo "✓ Quarantine attribute removed"
 
 # ── Step 4: Create DMG ────────────────────────────────────────────────────────
