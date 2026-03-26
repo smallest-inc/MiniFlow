@@ -34,11 +34,14 @@ jobs:
           pip install -r requirements.txt
 
       - name: Import signing certificate
-        if: ${{ env.APPLE_CERTIFICATE_BASE64 != '' }}
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
+          if [ -z "$APPLE_CERTIFICATE_BASE64" ]; then
+            echo "⚠ No signing certificate — skipping"
+            exit 0
+          fi
           KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
           KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
           echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode -o $RUNNER_TEMP/certificate.p12
@@ -51,6 +54,7 @@ jobs:
             -T /usr/bin/codesign
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          echo "✓ Signing certificate imported"
 
       - name: Build (backend + Swift app + DMG)
         run: |
