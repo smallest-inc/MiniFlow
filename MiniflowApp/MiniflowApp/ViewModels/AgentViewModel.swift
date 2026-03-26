@@ -325,21 +325,14 @@ final class AgentViewModel: ObservableObject {
     private func typeTextLocally(_ text: String) async {
         guard !text.isEmpty else { return }
 
-        // Try AXUIElement first — works for native apps, handles newlines natively
-        if insertTextViaAX(text) {
-            axLog("typeTextLocally: inserted via AXUIElement (\(text.count) chars)")
-            return
-        }
-
-        // AX failed (e.g. Electron apps, WhatsApp) — paste via Cmd+V
-        axLog("typeTextLocally: AX failed, falling back to Cmd+V")
+        // Use clipboard + System Events Cmd+V for all apps
+        // AXUIElement silently succeeds but doesn't work for Electron apps (WhatsApp, Terminal)
+        // System Events works universally
         let pasteboard = NSPasteboard.general
         let previous = pasteboard.string(forType: .string)
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
 
-        // Use System Events for Cmd+V — works universally (WhatsApp, Terminal, etc.)
-        // CGEvent.post(tap: .cghidEventTap) doesn't reliably reach all apps
         let script = NSAppleScript(source: """
             tell application "System Events" to keystroke "v" using command down
         """)
@@ -347,6 +340,8 @@ final class AgentViewModel: ObservableObject {
         script?.executeAndReturnError(&scriptError)
         if let scriptError = scriptError {
             axLog("typeTextLocally: AppleScript error: \(scriptError)")
+        } else {
+            axLog("typeTextLocally: pasted via System Events (\(text.count) chars)")
         }
 
         try? await Task.sleep(nanoseconds: 150_000_000)

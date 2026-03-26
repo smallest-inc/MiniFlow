@@ -292,7 +292,7 @@ Allowed changes:
 
 1. FILLER REMOVAL: Remove um, uh, ah, kinda,  and stuttered repeated words.
 
-2. PUNCTUATION: Add commas, periods, question marks naturally. Capitalize sentence starts. Long transcripts should be broken into paragraphs at natural topic shifts with proper blank line spacing.
+2. PUNCTUATION: Add commas, periods, question marks naturally. Questions MUST end with "?" not ".". Capitalize sentence starts. Long transcripts should be broken into paragraphs at natural topic shifts with proper blank line spacing.
 
 3. SPOKEN PUNCTUATION COMMANDS: When the speaker says a punctuation name, insert the symbol and remove the spoken word:
    "period" → .   "comma" → ,   "question mark" → ?   "exclamation mark" / "exclamation point" → !
